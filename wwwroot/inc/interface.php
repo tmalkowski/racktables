@@ -1498,24 +1498,6 @@ function renderObject ($object_id)
 		finishPortlet ();
 	}
 
-	$logrecords = getLogRecordsForObject ($_REQUEST['object_id']);
-	if (count ($logrecords))
-	{
-		startPortlet ('log records');
-		echo "<table cellspacing=0 cellpadding=5 align=center class=widetable width='100%'>";
-		$order = 'odd';
-		foreach ($logrecords as $row)
-		{
-			echo "<tr class=row_${order} valign=top>";
-			echo '<td class=tdleft>' . $row['date'] . '<br>' . $row['user'] . '</td>';
-			echo '<td class="logentry">' . string_insert_hrefs (htmlspecialchars ($row['content'], ENT_NOQUOTES)) . '</td>';
-			echo '</tr>';
-			$order = $nextorder[$order];
-		}
-		echo '</table>';
-		finishPortlet();
-	}
-
 	switchportInfoJS ($object_id); // load JS code to make portnames interactive
 	renderFilesPortlet ('object', $object_id);
 
@@ -1645,6 +1627,25 @@ function renderObject ($object_id)
 
 	renderSLBTriplets2 ($info);
 	renderSLBTriplets ($info);
+
+	$logrecords = getLogRecordsForObject ($_REQUEST['object_id']);
+	if (count ($logrecords))
+	{
+		startPortlet ('log records');
+		echo "<table cellspacing=0 cellpadding=5 align=center class=widetable width='100%'>";
+		$order = 'odd';
+		foreach ($logrecords as $row)
+		{
+			echo "<tr class=row_${order} valign=top>";
+			echo '<td class=tdleft>' . $row['date'] . '<br>' . $row['user'] . '</td>';
+			echo '<td class="logentry">' . string_insert_hrefs (htmlspecialchars ($row['content'], ENT_NOQUOTES)) . '</td>';
+			echo '</tr>';
+			$order = $nextorder[$order];
+		}
+		echo '</table>';
+		finishPortlet();
+	}
+
 	echo "</td>\n";
 
 	// After left column we have (surprise!) right column with rackspace portlet only.
