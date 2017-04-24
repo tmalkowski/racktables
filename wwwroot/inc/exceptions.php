@@ -259,6 +259,13 @@ class RTPermissionDenied extends RackTablesError
 		echo "<table border=1 cellspacing=0 cellpadding=3 width='50%' align=center>\n";
 		echo '<tr><th colspan=2><h3>' . getImageHREF ('DENIED') . ' access denied ';
 		echo getImageHREF ('DENIED') . '</h3></th></tr>';
+
+	/*
+
+		// IT Security doesn't want us displaying group membership for a user (the Automatic Tags section).
+		// I commented out the rest since I didn't want one of us to think RackTables had a problem and didn't load any groups.
+		// --tony
+
 		echo '<tr><th width="50%" class=tagchain>User given tags:</th><td class=tagchain>';
 		echo serializeTags ($user_given_tags) . "&nbsp;</td></tr>\n";
 		echo '<tr><th width="50%" class=tagchain>Target given tags:</th><td class=tagchain>';
@@ -269,6 +276,9 @@ class RTPermissionDenied extends RackTablesError
 		echo serializeTags ($impl_tags) . "&nbsp;</td></tr>\n";
 		echo '<tr><th width="50%" class=tagchain>Automatic tags:</th><td class=tagchain>';
 		echo serializeTags ($auto_tags) . "&nbsp;</td></tr>\n";
+
+	*/
+
 		echo "<tr><th width='50%' class=tdright>Requested page:</th><td class=tdleft>${pageno}</td></tr>\n";
 		echo "<tr><th width='50%' class=tdright>Requested tab:</th><td class=tdleft>${tabno}</td></tr>\n";
 		echo "<tr><td colspan=2 align=center>Click <a href='index.php?logout'>here</a> to logout.</td></tr>\n";
