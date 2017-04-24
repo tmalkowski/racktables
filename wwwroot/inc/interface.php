@@ -2590,7 +2590,7 @@ function renderIPSpaceRecords ($tree, $baseurl, $target = 0, $level = 1)
 				printRoutersTD (findNetRouters ($item), getConfigVar ('IPV4_TREE_RTR_AS_CELL'));
 
 			// comment
-			echo "<td class=\"tdleft\">" . niftyString ($item['comment'], 0) . "</td>";
+			echo "<td class=\"tdleft\">" . niftyString (isset($item['comment']) ? $item['comment'] : "", 0) . "</td>";
 
 			echo "</tr>";
 			if ($item['symbol'] == 'node-expanded' || $item['symbol'] == 'node-expanded-static')
@@ -2608,7 +2608,7 @@ function renderIPSpaceRecords ($tree, $baseurl, $target = 0, $level = 1)
 			echo "</td>";
 			if ($display_routers)
 				echo "<td></td>";
-			echo "<td class=\"tdleft\">" . niftyString ($item['comment'], 0) . "</td>";
+			echo "<td class=\"tdleft\">" . niftyString (isset($item['comment']) ? $item['comment'] : "", 0) . "</td>";
 			echo "</tr>";
 		}
 	}
