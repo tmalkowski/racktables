@@ -319,9 +319,9 @@ function constructLDAPOptions()
 	(
 		'group_attr' => 'memberof',
 		'group_filter' => '/^[Cc][Nn]=([^,]+)/',
-		'cache_refresh' => 300,
+		'cache_refresh' => 60,
 		'cache_retry' => 15,
-		'cache_expiry' => 600,
+		'cache_expiry' => 60,
 	);
 	foreach ($LDAP_defaults as $option_name => $option_value)
 		if (! array_key_exists ($option_name, $LDAP_options))
