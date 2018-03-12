@@ -815,14 +815,25 @@ function addPortForObject ()
 {
 	setFuncMessages (__FUNCTION__, array ('OK' => 48));
 	genericAssertion ('port_name', 'string');
-	commitAddPort
-	(
-		getBypassValue(),
-		trim ($_REQUEST['port_name']),
-		genericAssertion ('port_type_id', 'string'),
-		trim ($_REQUEST['port_label']),
-		trim (genericAssertion ('port_l2address', 'l2address0'))
-	);
+	try
+	{
+		commitAddPort
+		(
+			getBypassValue(),
+			trim ($_REQUEST['port_name']),
+			genericAssertion ('port_type_id', 'string'),
+			trim ($_REQUEST['port_label']),
+			trim (genericAssertion ('port_l2address', 'l2address0'))
+		);
+	}
+	catch (InvalidRequestArgException $irae)
+	{
+		throw $irae;
+	}
+	catch (InvalidArgException $iae)
+	{
+		throw $iae->newIRAE();
+	}
 	showFuncMessage (__FUNCTION__, 'OK', array ($_REQUEST['port_name']));
 }
 
@@ -831,16 +842,27 @@ function editPortForObject ()
 	setFuncMessages (__FUNCTION__, array ('OK' => 6));
 	global $sic;
 	$port_id = assertUIntArg ('port_id');
-	commitUpdatePort
-	(
-		getBypassValue(),
-		$port_id,
-		genericAssertion ('name', 'string'),
-		assertStringArg ('port_type_id'),
-		genericAssertion ('label', 'string0'),
-		genericAssertion ('l2address', 'l2address0'),
-		assertStringArg ('reservation_comment', TRUE)
-	);
+	try
+	{
+		commitUpdatePort
+		(
+			getBypassValue(),
+			$port_id,
+			genericAssertion ('name', 'string'),
+			assertStringArg ('port_type_id'),
+			genericAssertion ('label', 'string0'),
+			genericAssertion ('l2address', 'l2address0'),
+			assertStringArg ('reservation_comment', TRUE)
+		);
+	}
+	catch (InvalidRequestArgException $irae)
+	{
+		throw $irae;
+	}
+	catch (InvalidArgException $iae)
+	{
+		throw $iae->newIRAE();
+	}
 	if (array_key_exists ('cable', $_REQUEST))
 		commitUpdatePortLink ($port_id, $sic['cable']);
 	showFuncMessage (__FUNCTION__, 'OK', array ($_REQUEST['name']));
@@ -858,50 +880,6 @@ function addMultiPorts ()
 	{
 		switch ($format)
 		{
-			case 'fisxii':
-				$words = explode (' ', preg_replace ('/[[:space:]]+/', ' ', $line));
-				list ($slot, $port) = explode ('/', $words[0]);
-				$ports[] = array
-				(
-					'name' => "e ${slot}/${port}",
-					'l2address' => $words[8],
-					'label' => "slot ${slot} port ${port}"
-				);
-				break;
-			case 'c3600asy':
-				$words = explode (' ', preg_replace ('/[[:space:]]+/', ' ', trim (substr ($line, 3))));
-/*
-How Async Lines are Numbered in Cisco 3600 Series Routers
-http://www.cisco.com/en/US/products/hw/routers/ps274/products_tech_note09186a00801ca70b.shtml
-
-Understanding 16- and 32-Port Async Network Modules
-http://www.cisco.com/en/US/products/hw/routers/ps274/products_tech_note09186a00800a93f0.shtml
-*/
-				$async = $words[0];
-				$slot = floor (($async - 1) / 32);
-				$octalgroup = floor (($async - 1 - $slot * 32) / 8);
-				$cable = $async - $slot * 32 - $octalgroup * 8;
-				$og_label[0] = 'async 0-7';
-				$og_label[1] = 'async 8-15';
-				$og_label[2] = 'async 16-23';
-				$og_label[3] = 'async 24-31';
-				$ports[] = array
-				(
-					'name' => "async ${async}",
-					'l2address' => '',
-					'label' => "slot ${slot} " . $og_label[$octalgroup] . " cable ${cable}"
-				);
-				break;
-			case 'fiwg':
-				$words = explode (' ', preg_replace ('/[[:space:]]+/', ' ', $line));
-				$ifnumber = $words[0] * 1;
-				$ports[] = array
-				(
-					'name' => "e ${ifnumber}",
-					'l2address' => "${words[8]}",
-					'label' => "${ifnumber}"
-				);
-				break;
 			case 'ssv1':
 				$words = explode (' ', $line);
 				if ($words[0] == '') // empty L2 address is OK
@@ -914,8 +892,7 @@ http://www.cisco.com/en/US/products/hw/routers/ps274/products_tech_note09186a008
 				);
 				break;
 			default:
-				throw new InvalidRequestArgException ('format', $format);
-				break;
+				throw new RackTablesError ("unknown data format '${format}'", RackTablesError::INTERNAL);
 		}
 	}
 	// Create ports, if they don't exist.
@@ -959,11 +936,13 @@ function addBulkPorts ()
 	$port_numbering_count = genericAssertion ('port_numbering_count', 'uint');
 
 	$added_count = $error_count = 0;
-	if(strrpos($port_name, "%u") === false )
+	if (strrpos ($port_name, '%u') === FALSE)
 		$port_name .= '%u';
-	for ($i=0,$c=$port_numbering_start; $i<$port_numbering_count; $i++,$c++)
+	if (strrpos ($port_label, '%u') === FALSE)
+		$port_label .= '%u';
+	for ($i = 0, $c = $port_numbering_start; $i < $port_numbering_count; $i++, $c++)
 	{
-		commitAddPort ($object_id, @sprintf($port_name,$c), $port_type_id, @sprintf($port_label,$c), '');
+		commitAddPort ($object_id, @sprintf ($port_name, $c), $port_type_id, @sprintf ($port_label, $c), '');
 		$added_count++;
 	}
 	showFuncMessage (__FUNCTION__, 'OK', array ($added_count, $error_count));
@@ -1539,24 +1518,21 @@ function updateUI ()
 {
 	setFuncMessages (__FUNCTION__, array ('OK' => 51));
 	$num_vars = genericAssertion ('num_vars', 'uint');
-
-	for ($i = 0; $i < $num_vars; $i++)
+	try
 	{
-		assertStringArg ("${i}_varvalue", TRUE);
-		$varname = genericAssertion ("${i}_varname", 'string');
-		$varvalue = $_REQUEST["${i}_varvalue"];
-
-		// If form value = value in DB, don't bother updating DB
-		if (!isConfigVarChanged($varname, $varvalue))
-			continue;
-		try
+		for ($i = 0; $i < $num_vars; $i++)
 		{
-			setConfigVar ($varname, $varvalue);
+			assertStringArg ("${i}_varvalue", TRUE);
+			$varname = genericAssertion ("${i}_varname", 'string');
+			$varvalue = $_REQUEST["${i}_varvalue"];
+			// If form value = value in DB, don't bother updating DB.
+			if (isConfigVarChanged ($varname, $varvalue))
+				setConfigVar ($varname, $varvalue);
 		}
-		catch (InvalidArgException $iae)
-		{
-			throw $iae->newIRAE();
-		}
+	}
+	catch (InvalidArgException $iae)
+	{
+		throw $iae->newIRAE();
 	}
 	showFuncMessage (__FUNCTION__, 'OK');
 }
@@ -3363,8 +3339,9 @@ function autoPopulateUCS()
 	foreach ($contents as $item)
 	{
 		$mname = preg_replace ('#^sys/(.+)$#', $oinfo['name'] . '/\\1', $item['DN']);
-		if ($item['type'] == 'NetworkElement')
+		switch ($item['type'])
 		{
+		case 'NetworkElement':
 			$new_object_id = commitAddObject ($mname, NULL, 8, NULL);
 			#    Set H/W Type for Network Switch
 			if (array_key_exists ($item['model'], $ucsproductmap))
@@ -3374,9 +3351,8 @@ function autoPopulateUCS()
 			commitLinkEntities ('object', $ucsm_id, 'object', $new_object_id);
 			bindIPToObject (ip_parse ($item['OOB']), $new_object_id, 'mgmt0', 'regular');
 			$done++;
-		}
-		elseif ($item['type'] == 'EquipmentChassis')
-		{
+			break;
+		case 'EquipmentChassis':
 			$chassis_id[$item['DN']] = $new_object_id = commitAddObject ($mname, NULL, 1502, NULL);
 			#    Set H/W Type for Server Chassis
 			if (array_key_exists ($item['model'], $ucsproductmap))
@@ -3385,9 +3361,8 @@ function autoPopulateUCS()
 			commitUpdateAttrValue ($new_object_id, 1, $item['serial']);
 			commitLinkEntities ('object', $ucsm_id, 'object', $new_object_id);
 			$done++;
-		}
-		elseif ($item['type'] == 'ComputeBlade')
-		{
+			break;
+		case 'ComputeBlade':
 			if ($item['assigned'] == '')
 				$new_object_id = commitAddObject ($mname, NULL, 4, NULL);
 			else
@@ -3406,17 +3381,23 @@ function autoPopulateUCS()
 			if (array_key_exists ($parent_name, $chassis_id))
 				commitLinkEntities ('object', $chassis_id[$parent_name], 'object', $new_object_id);
 			$done++;
-		}
-		elseif ($item['type'] == 'VnicPort')
-		{
+			break;
+		case 'VnicPort':
 			$spname = preg_replace ('#^([^/]+)/ls-([^/]+)/([^/]+)$#', '${2}', $item['DN']) . "(" . $oinfo['name'] . ")";
 			$porttype = preg_replace ('#^([^/]+)/([^/]+)/([^-/]+)-.+$#', '${3}', $item['DN']);
-			#        Add "virtual"(1469) ports for associated blades only
-			if ($spid = $spname_id[$spname])
-				commitAddPort ($spid, $item['name'], 1469, $porttype, $item['addr']);
-		}
-		elseif ($item['type'] == 'ComputeRackUnit')
-		{
+			try
+			{
+				// Add "virtual" (1469) ports for associated blades only. The attempt may fail
+				// due to incorrect port type or MAC address.
+				if ($spid = $spname_id[$spname])
+					commitAddPort ($spid, $item['name'], 1469, $porttype, $item['addr']);
+			}
+			catch (InvalidArgException $iae)
+			{
+				showError ($iae->getMessage());
+			}
+			break;
+		case 'ComputeRackUnit':
 			if ($item['assigned'] == '')
 				$new_object_id = commitAddObject ($mname, NULL, 4, NULL);
 			else
@@ -3432,6 +3413,7 @@ function autoPopulateUCS()
 			$parent_name = preg_replace ('#^([^/]+)/([^/]+)/([^/]+)$#', '${1}/${2}', $item['DN']);
 			commitLinkEntities ('object', $ucsm_id, 'object', $new_object_id);
 			$done++;
+			break;
 		}
 	} # endfor
 	showSuccess ("Auto-populated UCS Domain '${oinfo['name']}' with ${done} items");
@@ -3777,7 +3759,6 @@ function editUserProperties ()
 	$user_id = getBypassValue();
 	rebuildTagChainForEntity ('user', $user_id, buildTagChainFromIds ($taglist), TRUE);
 	$user = spotEntity ('user', $user_id);
-	print_r($user);
 	showFuncMessage (__FUNCTION__, 'OK', array($user['user_name']));
 }
 
@@ -3790,8 +3771,15 @@ function renameObjectPorts()
 		$canon_pn = shortenPortName ($port['name'], $port['object_id']);
 		if ($canon_pn != $port['name'])
 		{
-			commitUpdatePort ($object_id, $port['id'], $canon_pn, $port['oif_id'], $port['label'], $port['l2address'], $port['reservation_comment']);
-			$n++;
+			try
+			{
+				commitUpdatePort ($object_id, $port['id'], $canon_pn, $port['oif_id'], $port['label'], $port['l2address'], $port['reservation_comment']);
+				$n++;
+			}
+			catch (InvalidArgException $iae)
+			{
+				showError ($iae->getMessage());
+			}
 		}
 	}
 	if ($n)

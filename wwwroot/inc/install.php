@@ -122,7 +122,8 @@ function init_config ()
 		echo "<input type=hidden name=save_config value=1>\n";
 		echo '<h3>Server-side MySQL setup of the database:</h3><div align=left><pre class=trok>';
 		echo "mysql&gt;\nCREATE DATABASE racktables_db CHARACTER SET utf8 COLLATE utf8_general_ci;\n";
-		echo "GRANT ALL PRIVILEGES ON racktables_db.* TO racktables_user@localhost IDENTIFIED BY 'MY_SECRET_PASSWORD';\n</pre></div>";
+		echo "CREATE USER racktables_user@localhost IDENTIFIED BY 'MY_SECRET_PASSWORD';\n";
+		echo "GRANT ALL PRIVILEGES ON racktables_db.* TO racktables_user@localhost;\n</pre></div>";
 		echo '<table>';
 		echo '<tr><td><label for=conn_tcp>TCP connection</label></td>';
 		echo '<td><input type=radio name=conn value=conn_tcp id=conn_tcp' . ($use_tcp ? ' checked' : '') . '></td></tr>';
@@ -1371,16 +1372,6 @@ END;
 ENDOFTRIGGER;
 		$query[] = "CREATE TRIGGER `Link-before-insert` BEFORE INSERT ON `Link` FOR EACH ROW $link_trigger_body";
 		$query[] = "CREATE TRIGGER `Link-before-update` BEFORE UPDATE ON `Link` FOR EACH ROW $link_trigger_body";
-
-		$port_trigger_body = <<<ENDOFTRIGGER
-PortTrigger:BEGIN
-  IF (NEW.`l2address` IS NOT NULL AND (SELECT COUNT(*) FROM `Port` WHERE `l2address` = NEW.`l2address` AND `object_id` != NEW.`object_id`) > 0) THEN
-    CALL `Port-l2address-already-exists-on-another-object`;
-  END IF;
-END;
-ENDOFTRIGGER;
-		$query[] = "CREATE TRIGGER `Port-before-insert` BEFORE INSERT ON `Port` FOR EACH ROW $port_trigger_body";
-		$query[] = "CREATE TRIGGER `Port-before-update` BEFORE UPDATE ON `Port` FOR EACH ROW $port_trigger_body";
 
 		$query[] = "CREATE VIEW `Location` AS SELECT O.id, O.name, O.has_problems, O.comment, P.id AS parent_id, P.name AS parent_name
 FROM `Object` O

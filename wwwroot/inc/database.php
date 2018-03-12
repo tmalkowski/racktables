@@ -896,6 +896,19 @@ function getObjectPortsAndLinks ($object_id, $sorted = TRUE)
 	return $ret;
 }
 
+// This function provides data for syncObjectPorts() and requires only two tables locked.
+function getObjectPortsAndLinksTerse ($object_id)
+{
+	$result = usePreparedSelectBlade
+	(
+		'SELECT id, name, iif_id, type AS oif_id, label, l2address, reservation_comment, ' .
+		'(SELECT COUNT(*) FROM Link WHERE porta = Port.id OR portb = Port.id) AS link_count ' .
+		'FROM Port WHERE object_id = ?',
+		array ($object_id)
+	);
+	return $result->fetchAll (PDO::FETCH_ASSOC);
+}
+
 // Fetch the object type via SQL.
 // spotEntity cannot be used because it references RackObject, which doesn't suit Racks, Rows, or Locations.
 function getObjectType ($object_id)
@@ -958,11 +971,11 @@ function commitAddObject ($new_name, $new_label, $new_type_id, $new_asset_no, $t
 	}
 	lastCreated ($realm, $object_id);
 
+	// Store any tags before executeAutoPorts() calls spotEntity() and populates the cache.
+	produceTagsForNewRecord ($realm, $taglist, $object_id);
 	// Do AutoPorts magic
 	if ($realm == 'object')
 		executeAutoPorts ($object_id);
-	// Now tags...
-	produceTagsForNewRecord ($realm, $taglist, $object_id);
 	recordObjectHistory ($object_id);
 	return $object_id;
 }
@@ -988,25 +1001,32 @@ function commitRenameObject ($object_id, $new_name)
 
 function commitUpdateObject ($object_id, $new_name, $new_label, $new_has_problems, $new_asset_no, $new_comment)
 {
+	$set_columns = array
+	(
+		'name' => nullIfEmptyStr ($new_name),
+		'label' => nullIfEmptyStr ($new_label),
+		'has_problems' => $new_has_problems == '' ? 'no' : $new_has_problems,
+		'asset_no' => nullIfEmptyStr ($new_asset_no),
+		'comment' => nullIfEmptyStr ($new_comment),
+	);
+	$override = callHook('commitUpdateObjectBefore_hook', $object_id, $set_columns);
+	if ( is_array ($override) )
+	{
+		$set_columns = $override;
+	}
 	$type_id = getObjectType ($object_id);
 	checkObjectNameUniqueness ($new_name, $type_id, $object_id);
 	usePreparedUpdateBlade
 	(
 		'Object',
-		array
-		(
-			'name' => nullIfEmptyStr ($new_name),
-			'label' => nullIfEmptyStr ($new_label),
-			'has_problems' => $new_has_problems == '' ? 'no' : $new_has_problems,
-			'asset_no' => nullIfEmptyStr ($new_asset_no),
-			'comment' => nullIfEmptyStr ($new_comment),
-		),
+		$set_columns,
 		array
 		(
 			'id' => $object_id
 		)
 	);
 	recordObjectHistory ($object_id);
+	callHook ('commitUpdateObjectAfter_hook', $object_id);
 }
 
 function compare_name ($a, $b)
@@ -1668,41 +1688,47 @@ function getResidentRacksData ($object_id = 0, $fetch_rackdata = TRUE)
 
 function commitAddPort ($object_id, $port_name, $port_type_id, $port_label, $port_l2address)
 {
+	global $dbxlink;
 	$db_l2address = l2addressForDatabase ($port_l2address);
-	$matches = array();
-	switch (1)
-	{
-	case preg_match ('/^([[:digit:]]+)-([[:digit:]]+)$/', $port_type_id, $matches):
-		$iif_id = $matches[1];
-		$oif_id = $matches[2];
-		break;
-	case preg_match ('/^([[:digit:]]+)$/', $port_type_id, $matches):
-		$iif_id = 1;
-		$oif_id = $matches[1];
-		break;
-	default:
-		throw new InvalidArgException ('port_type_id', $port_type_id, 'format error');
-	}
+	list ($iif_id, $oif_id) = parsePortIIFOIF ($port_type_id);
+	// The conditional table locking is less relevant now due to syncObjectPorts().
+	if ($db_l2address != '')
+		$dbxlink->exec ('LOCK TABLES Port WRITE');
 	try
 	{
-		usePreparedInsertBlade
-		(
-			'Port',
-			array
-			(
-				'name' => $port_name,
-				'object_id' => $object_id,
-				'label' => $port_label,
-				'iif_id' => $iif_id,
-				'type' => $oif_id,
-				'l2address' => nullIfEmptyStr ($db_l2address),
-			)
-		);
+		assertUniqueL2Addresses (array ($db_l2address), $object_id);
+		$ret = commitAddPortReal ($object_id, $port_name, $iif_id, $oif_id, $port_label, $db_l2address);
 	}
-	catch (L2AddressException $e)
+	catch (Exception $e)
 	{
-		throw new InvalidRequestArgException ('port_l2address', $port_l2address, $e->getMessage());
+		if ($db_l2address != '')
+			$dbxlink->exec ('UNLOCK TABLES');
+		throw $e;
 	}
+	if ($db_l2address != '')
+		$dbxlink->exec ('UNLOCK TABLES');
+	return $ret;
+}
+
+// Having the call to assertUniqueL2Addresses() in this function would break things because
+// if the constraint check fails for any port the whole "transaction" needs to be rolled
+// back. Thus the calling function must call assertUniqueL2Addresses() for all involved ports
+// first and only then start making any calls to this function.
+function commitAddPortReal ($object_id, $port_name, $iif_id, $oif_id, $port_label, $db_l2address)
+{
+	usePreparedInsertBlade
+	(
+		'Port',
+		array
+		(
+			'name' => $port_name,
+			'object_id' => $object_id,
+			'label' => $port_label,
+			'iif_id' => $iif_id,
+			'type' => $oif_id,
+			'l2address' => nullIfEmptyStr ($db_l2address),
+		)
+	);
 	lastCreated ('port', lastInsertID());
 	return lastInsertID();
 }
@@ -1713,54 +1739,53 @@ function getPortReservationComment ($port_id, $extrasql = '')
 	return $result->fetchColumn();
 }
 
-// The fifth argument may be either explicit 'NULL' or some (already quoted by the upper layer)
-// string value. In case it is omitted, we just assign it its current value.
-// It would be nice to simplify this semantics later.
 function commitUpdatePort ($object_id, $port_id, $port_name, $port_type_id, $port_label, $port_l2address, $port_reservation_comment)
 {
+	global $dbxlink;
 	$db_l2address = l2addressForDatabase ($port_l2address);
-	$portinfo = getPortInfo ($port_id);
-	$reservation_comment = nullIfEmptyStr ($port_reservation_comment);
-	switch (1)
-	{
-	case preg_match ('/^([[:digit:]]+)-([[:digit:]]+)$/', $port_type_id, $matches):
-		$iif_id = $matches[1];
-		$oif_id = $matches[2];
-		break;
-	case preg_match ('/^([[:digit:]]+)$/', $port_type_id, $matches):
-		$iif_id = $portinfo['iif_id'];
-		$oif_id = $matches[1];
-		break;
-	default:
-		throw new InvalidArgException ('port_type_id', $port_type_id, 'format error');
-	}
+	list ($iif_id, $oif_id) = parsePortIIFOIF ($port_type_id);
+	if ($db_l2address != '')
+		$dbxlink->exec ('LOCK TABLES Port WRITE, PortLog WRITE');
 	try
 	{
-		usePreparedUpdateBlade
-		(
-			'Port',
-			array
-			(
-				'name' => $port_name,
-				'iif_id' => $iif_id,
-				'type' => $oif_id,
-				'label' => $port_label,
-				'reservation_comment' => $reservation_comment,
-				'l2address' => nullIfEmptyStr ($db_l2address),
-			),
-			array
-			(
-				'id' => $port_id,
-				'object_id' => $object_id
-			)
-		);
+		assertUniqueL2Addresses (array ($db_l2address), $object_id);
+		commitUpdatePortReal ($object_id, $port_id, $port_name, $iif_id, $oif_id, $port_label, $db_l2address, $port_reservation_comment);
 	}
-	catch (L2AddressException $e)
+	catch (Exception $e)
 	{
-		throw new InvalidRequestArgException ('port_l2address', $port_l2address, $e->getMessage());
+		if ($db_l2address != '')
+			$dbxlink->exec ('UNLOCK TABLES');
+		throw $e;
 	}
-	if ($portinfo['reservation_comment'] !== $reservation_comment)
-		addPortLogEntry ($port_id, sprintf ("Reservation changed from '%s' to '%s'", $portinfo['reservation_comment'], $reservation_comment));
+	if ($db_l2address != '')
+		$dbxlink->exec ('UNLOCK TABLES');
+}
+
+// The comment about commitAddPortReal() also applies here.
+function commitUpdatePortReal ($object_id, $port_id, $port_name, $iif_id, $oif_id, $port_label, $db_l2address, $port_reservation_comment)
+{
+	$old_reservation_comment = getPortReservationComment ($port_id);
+	$port_reservation_comment = nullIfEmptyStr ($port_reservation_comment);
+	usePreparedUpdateBlade
+	(
+		'Port',
+		array
+		(
+			'name' => $port_name,
+			'iif_id' => $iif_id,
+			'type' => $oif_id,
+			'label' => $port_label,
+			'reservation_comment' => $port_reservation_comment,
+			'l2address' => nullIfEmptyStr ($db_l2address),
+		),
+		array
+		(
+			'id' => $port_id,
+			'object_id' => $object_id
+		)
+	);
+	if ($old_reservation_comment !== $port_reservation_comment)
+		addPortLogEntry ($port_id, sprintf ("Reservation changed from '%s' to '%s'", $old_reservation_comment, $port_reservation_comment));
 }
 
 function commitUpdatePortComment ($port_id, $port_reservation_comment)
@@ -2746,33 +2771,39 @@ function unbindIPv6FromObject ($ip_bin, $object_id)
 
 function getIPv4PrefixSearchResult ($terms)
 {
-	$byname = getSearchResultByField
-	(
-		'IPv4Network',
-		array ('id'),
-		'name',
-		$terms,
-		'ip'
-	);
 	$ret = array();
-	foreach ($byname as $row)
-		$ret[$row['id']] = spotEntity ('ipv4net', $row['id']);
+	foreach (array ('name', 'comment') as $column)
+	{
+		$tmp = getSearchResultByField
+		(
+			'IPv4Network',
+			array ('id'),
+			$column,
+			$terms,
+			'ip'
+		);
+		foreach ($tmp as $row)
+			$ret[$row['id']] = spotEntity ('ipv4net', $row['id']);
+	}
 	return $ret;
 }
 
 function getIPv6PrefixSearchResult ($terms)
 {
-	$byname = getSearchResultByField
-	(
-		'IPv6Network',
-		array ('id'),
-		'name',
-		$terms,
-		'ip'
-	);
 	$ret = array();
-	foreach ($byname as $row)
-		$ret[$row['id']] = spotEntity ('ipv6net', $row['id']);
+	foreach (array ('name', 'comment') as $column)
+	{
+		$tmp = getSearchResultByField
+		(
+			'IPv6Network',
+			array ('id'),
+			$column,
+			$terms,
+			'ip'
+		);
+		foreach ($tmp as $row)
+			$ret[$row['id']] = spotEntity ('ipv6net', $row['id']);
+	}
 	return $ret;
 }
 
@@ -3552,12 +3583,15 @@ function commitDeleteChapter ($chapter_no)
 
 // This is a dictionary accessor. We perform link rendering, so the user sees
 // nice <select> drop-downs.
-function readChapter ($chapter_id = 0, $style = '')
+function readChapter ($chapter_id, $style = '')
 {
+	$result = usePreparedSelectBlade ('SELECT id FROM Chapter WHERE id = ?', array ($chapter_id));
+	if (FALSE === $result->fetchColumn())
+		throw new EntityNotFoundException ('chapter', $chapter_id);
+	unset ($result);
 	$result = usePreparedSelectBlade
 	(
-		"select dict_key, dict_value as value from Dictionary " .
-		"where chapter_id = ?",
+		'SELECT dict_key, dict_value AS value FROM Dictionary WHERE chapter_id = ?',
 		array ($chapter_id)
 	);
 	$chapter = array();
@@ -3587,18 +3621,18 @@ function getChapterRefc ($chapter_id, $keylist)
 	{
 	case CHAP_OBJTYPE:
 		// ObjectType chapter is referenced by AttributeMap and Object tables
-		$query = 'select dict_key as uint_value, (select count(*) from AttributeMap where objtype_id = dict_key) + ' .
-			"(select count(*) from Object where objtype_id = dict_key) as refcnt from Dictionary where chapter_id = ?";
+		$query = 'SELECT dict_key AS uint_value, (SELECT COUNT(*) FROM AttributeMap WHERE objtype_id = dict_key) + ' .
+			'(SELECT COUNT(*) FROM Object WHERE objtype_id = dict_key) AS refcnt FROM Dictionary WHERE chapter_id = ?';
 		break;
 	default:
 		// Find the list of all assigned values of dictionary-addressed attributes, each with
 		// chapter/word keyed reference counters.
-		$query = "select uint_value, count(object_id) as refcnt
-			from AttributeMap am
-			inner join AttributeValue av on am.attr_id = av.attr_id
-			inner join Object o on o.id = av.object_id
-			where am.chapter_id = ? and o.objtype_id = am.objtype_id
-			group by uint_value";
+		$query = 'SELECT uint_value, count(object_id) AS refcnt
+			FROM AttributeMap am
+			INNER JOIN AttributeValue av ON am.attr_id = av.attr_id
+			INNER JOIN Object o ON o.id = av.object_id
+			WHERE am.chapter_id = ? AND o.objtype_id = am.objtype_id
+			GROUP BY uint_value';
 		break;
 	}
 	$result = usePreparedSelectBlade ($query, array ($chapter_id));
@@ -3683,13 +3717,14 @@ function getAttrMap ()
 	return $ret;
 }
 
-// FIXME: don't store garbage in chapter_no for non-dictionary types.
-function commitSupplementAttrMap ($attr_id = 0, $objtype_id = 0, $chapter_no = 0)
+function commitSupplementAttrMap ($attr_id, $objtype_id, $chapter_no = NULL)
 {
-	if ($attr_id <= 0)
-		throw new InvalidArgException ('attr_id', $attr_id);
 	if ($objtype_id <= 0)
 		throw new InvalidArgException ('objtype_id', $objtype_id);
+	if (getAttrType ($attr_id) != 'dict')
+		$chapter_no = NULL;
+	elseif ($chapter_no === NULL)
+		throw new InvalidArgException ('chapter_no', '(NULL)', 'must not be NULL for a [D] attribute');
 
 	usePreparedInsertBlade
 	(
@@ -3871,12 +3906,6 @@ function convertPDOException ($e)
 	case 'HY000-1205':
 		$text = 'lock wait timeout';
 		break;
-	case '42000-1305':
-		if (FALSE !== strpos ($e->errorInfo[2], 'l2address-already-exists-on-another-object'))
-			return new L2AddressException ('l2 address belongs to another object');
-		else
-			return $e;
-		break;
 	default:
 		return $e;
 	}
@@ -4054,10 +4083,10 @@ function loadEntityTags ($entity_realm, $entity_id)
 {
 	$result = usePreparedSelectBlade
 	(
-		"select tt.id, tag from " .
-		"TagStorage as ts inner join TagTree as tt on ts.tag_id = tt.id " .
-		"where entity_realm = ? and entity_id = ? " .
-		"order by tt.tag",
+		"SELECT tt.id, tag FROM " .
+		"TagStorage AS ts INNER JOIN TagTree AS tt ON ts.tag_id = tt.id " .
+		"WHERE entity_realm = ? AND entity_id = ? " .
+		"ORDER BY tt.tag",
 		array ($entity_realm, $entity_id)
 	);
 	return reindexById ($result->fetchAll (PDO::FETCH_ASSOC));
@@ -4469,7 +4498,7 @@ function destroyIPv6Prefix ($id)
 
 function loadScript ($name)
 {
-	$result = usePreparedSelectBlade ("select script_text from Script where script_name = ?", array ($name));
+	$result = usePreparedSelectBlade ("SELECT script_text FROM Script WHERE script_name = ?", array ($name));
 	return nullIfFalse ($result->fetchColumn());
 }
 
@@ -4893,11 +4922,11 @@ function deleteLDAPCacheRecord ($username)
 	usePreparedDeleteBlade ('LDAPCache', array ('presented_username' => $username));
 }
 
-// Age all records older, than cache_expiry seconds, and all records made in future.
+// Purge all records older than the threshold, as well as any records made in future.
 // Calling this function w/o argument purges the whole LDAP cache.
-function discardLDAPCache ($maxage = 0)
+function discardLDAPCache ($maxseconds = 0)
 {
-	usePreparedExecuteBlade ('DELETE from LDAPCache WHERE TIMESTAMPDIFF(SECOND, first_success, NOW()) >= ? or NOW() < first_success', array ($maxage));
+	usePreparedExecuteBlade ('DELETE FROM LDAPCache WHERE TIMESTAMPDIFF(SECOND, first_success, NOW()) >= ? OR NOW() < first_success', array ($maxseconds));
 }
 
 function getUserIDByUsername ($username)
@@ -4922,6 +4951,42 @@ function constructUserCell ($username)
 	);
 	$ret['atags'] = generateEntityAutoTags ($ret);
 	return $ret;
+}
+
+// DEPRECATED but snmpgeneric.php uses it, remove in 0.21.0.
+function alreadyUsedL2Address ($address, $my_object_id)
+{
+	try
+	{
+		assertUniqueL2Addresses (array ($address), $my_object_id);
+		return FALSE;
+	}
+	catch (InvalidArgException $iae)
+	{
+		return TRUE;
+	}
+}
+
+// Raise an exception if any of the given MAC/WWN addresses (less empty strings)
+// belongs to a port with an object ID other than the given. This constraint makes
+// it possible to reuse L2 addresses within one object's set of ports and to keep
+// them universally unique otherwise. Every L2 address on the input list must have
+// been conditioned with l2AddressForDatabase().
+function assertUniqueL2Addresses ($db_l2addresses, $my_object_id)
+{
+	// Reindex the array such that array_merge() below works as expected.
+	$db_l2addresses = array_values (array_unique (array_filter ($db_l2addresses, 'strlen')));
+	if (0 == count ($db_l2addresses))
+		return;
+	$qm = questionMarks (count ($db_l2addresses));
+	// BINARY in the second comparison is what the query is actually looking for but without
+	// the first (non-BINARY) comparison the table index does not work as expected.
+	$query = 'SELECT l2address, object_id, name FROM Port ' .
+		"WHERE l2address IN(${qm}) AND BINARY l2address IN(${qm}) AND object_id != ? LIMIT 1";
+	$params = array_merge ($db_l2addresses, $db_l2addresses, array ($my_object_id));
+	$result = usePreparedSelectBlade ($query, $params);
+	if ($row = $result->fetch (PDO::FETCH_ASSOC))
+		throw new InvalidArgException ('L2 address', $row['l2address'], "already used by object#{$row['object_id']} port '{$row['name']}'");
 }
 
 function getPortInterfaceCompat()
@@ -5634,7 +5699,7 @@ function setUserConfigVar ($varname, $varvalue)
 	// Update cache only if the changes went into DB.
 	usePreparedExecuteBlade
 	(
-		'REPLACE UserConfig SET varvalue=?, varname=?, user=?',
+		'REPLACE INTO UserConfig SET varvalue=?, varname=?, user=?',
 		array ($varvalue, $varname, $remote_username)
 	);
 	$configCache[$varname]['varvalue'] = $varvalue;

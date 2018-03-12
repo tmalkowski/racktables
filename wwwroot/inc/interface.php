@@ -435,6 +435,7 @@ function getRackThumbLink ($rack, $scale = 1, $object_id = NULL)
 
 function renderRackspace ()
 {
+	global $pageno;
 	// Handle the location filter
 	startSession();
 	if (isset ($_REQUEST['changeLocationFilter']))
@@ -541,7 +542,7 @@ function renderRackspace ()
 			}
 		}
 	}
-	echo '</td><td class=pcright width="25%">';
+	echo "</td><td class='pcright ${pageno}' width='25%'>";
 	renderCellFilterPortlet ($cellfilter, 'rack', $found_racks);
 	echo "<br>\n";
 	renderLocationFilterPortlet ();
@@ -1423,7 +1424,7 @@ function renderObject ($object_id)
 	// Main layout starts.
 	echo "<table border=0 class=objectview cellspacing=0 cellpadding=0>";
 	echo "<tr><td colspan=2 align=center><h1>${info['dname']}</h1></td></tr>\n";
-	// left column with uknown number of portlets
+	// A mandatory left column with varying number of portlets.
 	echo "<tr><td class=pcleft>";
 
 	// display summary portlet
@@ -1648,19 +1649,22 @@ function renderObject ($object_id)
 
 	echo "</td>\n";
 
-	// After left column we have (surprise!) right column with rackspace portlet only.
-	echo "<td class=pcright>";
-	if (!in_array($info['objtype_id'], $virtual_obj_types))
+	// A conditional right column with the rackspace portlet only.
+	if
+	(
+		! in_array ($info['objtype_id'], $virtual_obj_types) &&
+		count ($rack_ids = getResidentRacksData ($object_id, FALSE))
+	)
 	{
-		// rackspace portlet
+		echo '<td class=pcright>';
 		startPortlet ('rackspace allocation');
-		foreach (getResidentRacksData ($object_id, FALSE) as $rack_id)
+		foreach ($rack_ids as $rack_id)
 			renderRack ($rack_id, $object_id);
 		echo '<br>';
 		finishPortlet();
+		echo '</td>';
 	}
-	echo "</td></tr>";
-	echo "</table>\n";
+	echo "<tr></table>\n";
 }
 
 function renderRackMultiSelect ($sname, $racks, $selected)
@@ -1849,12 +1853,9 @@ function renderPortsForObject ($object_id)
 	printOpFormIntro ('addMultiPorts');
 	$formats = array
 	(
-		'c3600asy' => 'Cisco 3600 async: sh line | inc TTY',
-		'fiwg' => 'Foundry ServerIron/FastIron WorkGroup/Edge: sh int br',
-		'fisxii' => 'Foundry FastIron SuperX/II4000: sh int br',
 		'ssv1' => 'SSV:<interface name> [<MAC address>]',
 	);
-	echo 'Format: ' . getSelect ($formats, array ('name' => 'format'), 'ssv1');
+	echo 'Format: ' . getSelect ($formats, array ('name' => 'format'), 'ssv1') . ' ';
 	echo 'Default port type: ';
 	printNiftySelect (getNewPortTypeOptions(), array ('name' => 'port_type'), $prefs['selected']);
 	echo "<input type=submit value='Parse output'><br>\n";
@@ -2431,7 +2432,7 @@ function renderDepot ()
 		}
 	}
 
-	echo "</td><td class=pcright width='25%'>";
+	echo "</td><td class='pcright ${pageno}' width='25%'>";
 
 	renderCellFilterPortlet ($cellfilter, 'object', $objects);
 	echo "</td></tr></table>\n";
@@ -2685,7 +2686,7 @@ function renderIPSpace()
 		}
 	}
 
-	echo '</td><td class=pcright>';
+	echo "</td><td class='pcright ${pageno}'>";
 	renderCellFilterPortlet ($cellfilter, $realm, $netlist);
 	echo "</td></tr></table>\n";
 }
@@ -3011,7 +3012,12 @@ function renderIPv4NetworkAddresses ($range)
 
 	echo $rendered_pager;
 	echo "<table class='widetable' border=0 cellspacing=0 cellpadding=5 align='center' width='100%'>\n";
+
+	ob_start ();
 	echo "<tr><th>Address</th><th>Name</th><th>Comment</th><th>Allocation</th></tr>\n";
+	$row_html = ob_get_clean ();
+	$override = callHook ('renderIPv4NetworkAddressesHeaderRow_hook', $row_html);
+	echo is_string ($override) ? $override : $row_html;
 
 	markupIPAddrList ($range['addrlist']);
 	for ($ip = $startip; $ip <= $endip; $ip++)
@@ -3023,12 +3029,16 @@ function renderIPv4NetworkAddresses ($range)
 			$addr = $range['addrlist'][$ip_bin];
 		else
 		{
+			ob_start ();
 			echo "<tr class='tdleft $tr_class'><td class=tdleft><a name='ip-$dottedquad' href='" . makeHref(array('page'=>'ipaddress', 'ip' => $dottedquad)) . "'>$dottedquad</a></td>";
 			$editable = permitted ('ipaddress', 'properties', 'editAddress')
 				? 'editable'
 				: '';
 			echo "<td><span class='rsvtext $editable id-$dottedquad op-upd-ip-name'></span></td>";
 			echo "<td><span class='rsvtext $editable id-$dottedquad op-upd-ip-comment'></span></td><td></td></tr>\n";
+			$row_html = ob_get_clean ();
+			$override = callHook ('renderIPv4NetworkAddressesRow_hook', $row_html, $ip_bin, null);
+			echo is_string ($override) ? $override : $row_html;
 			continue;
 		}
 		// render IP change history
@@ -3040,6 +3050,7 @@ function renderIPv4NetworkAddresses ($range)
 			$history_class = 'hover-history underline';
 		}
 		$tr_class .= ' ' . $addr['class'];
+		ob_start ();
 		echo "<tr class='tdleft $tr_class'>";
 		echo "<td><a class='$history_class' $title name='ip-$dottedquad' href='".makeHref(array('page'=>'ipaddress', 'ip'=>$addr['ip']))."'>${addr['ip']}</a></td>";
 		$editable =
@@ -3083,6 +3094,9 @@ function renderIPv4NetworkAddresses ($range)
 			$delim = '<br>';
 		}
 		echo "</td></tr>\n";
+		$row_html = ob_get_clean ();
+		$override = callHook ('renderIPv4NetworkAddressesRow_hook', $row_html, $ip_bin, $addr);
+		echo is_string ($override) ? $override : $row_html;
 	}
 	// end of iteration
 	if (permitted (NULL, NULL, 'set_reserve_comment'))
@@ -3097,7 +3111,11 @@ function renderIPv6NetworkAddresses ($netinfo)
 {
 	global $pageno, $tabno, $aac_left;
 	echo "<table class='widetable' border=0 cellspacing=0 cellpadding=5 align='center' width='100%'>\n";
+	ob_start ();
 	echo "<tr><th>Address</th><th>Name</th><th>Comment</th><th>Allocation</th></tr>\n";
+	$row_html = ob_get_clean ();
+	$override = callHook ('renderIPv6NetworkAddressesHeaderRow_hook', $row_html);
+	echo is_string ($override) ? $override : $row_html;
 
 	$hl_ip = NULL;
 	if (isset ($_REQUEST['hl_ip']))
@@ -3158,6 +3176,7 @@ function renderIPv6NetworkAddresses ($netinfo)
 		}
 
 		$tr_class = $addr['class'] . ' tdleft' . ($hl_ip === $ip_bin ? ' highlight' : '');
+		ob_start ();
 		echo "<tr class='$tr_class'>";
 		echo "<td><a class='$history_class' $title name='ip-${addr['ip']}' href='" . makeHref (array ('page' => 'ipaddress', 'ip' => $addr['ip'])) . "'>${addr['ip']}</a></td>";
 		$editable =
@@ -3200,6 +3219,10 @@ function renderIPv6NetworkAddresses ($netinfo)
 			$delim = '<br>';
 		}
 		echo "</td></tr>\n";
+		$row_html = ob_get_clean ();
+		$override = callHook ('renderIPv6NetworkAddressesRow_hook', $row_html, $ip_bin, $addr);
+		echo is_string ($override) ? $override : $row_html;
+		continue;
 	}
 	if (! $interruped)
 		renderSeparator (ip_next ($prev_ip), ip_last ($netinfo), $hl_ip);
@@ -3966,6 +3989,7 @@ function renderCellList ($realm = NULL, $title = 'items', $do_amplify = FALSE, $
 	if ($realm === NULL)
 		$realm = etypeByPageno();
 	global $nextorder;
+	global $pageno;
 	$order = 'odd';
 	$cellfilter = getCellFilter();
 	if (! isset ($celllist))
@@ -3992,7 +4016,7 @@ function renderCellList ($realm = NULL, $title = 'items', $do_amplify = FALSE, $
 		echo '</table>';
 		finishPortlet();
 	}
-	echo '</td><td class=pcright>';
+	echo "</td><td class='pcright ${pageno}'>";
 	renderCellFilterPortlet ($cellfilter, $realm, $celllist);
 	echo "</td></tr></table>\n";
 }
@@ -4216,7 +4240,7 @@ function renderSNMPPortFinder ($object_id)
 		<td class=tdleft><?php printSelect ($sloptions, array ('name' => 'sec_level'), 'noAuthNoPriv'); ?></td>
 	</tr>
 	<tr>
-		<th class=tdright><label for="auth_protocol_1">Auth Type:</label></th>
+		<th class=tdright>Auth Type:</th>
 		<td class=tdleft>
 		<input id=auth_protocol_1 name=auth_protocol type=radio value=md5 />
 		<label for=auth_protocol_1>MD5</label>
@@ -4229,7 +4253,7 @@ function renderSNMPPortFinder ($object_id)
 		<td class=tdleft><input type=text id=auth_passphrase name=auth_passphrase></td>
 	</tr>
 	<tr>
-		<th class=tdright><label for=priv_protocol_1>Priv Type:</label></th>
+		<th class=tdright>Priv Type:</th>
 		<td class=tdleft>
 		<input id=priv_protocol_1 name=priv_protocol type=radio value=DES />
 		<label for=priv_protocol_1>DES</label>
@@ -5187,9 +5211,14 @@ function getFilePreviewCode ($file)
 		case 'image/png':
 		case 'image/gif':
 			$file = getFile ($file['id']);
-			$image = imagecreatefromstring ($file['contents']);
-			$width = imagesx ($image);
-			$height = imagesy ($image);
+			if (function_exists ('getimagesizefromstring'))
+				list ($width, $height) = getimagesizefromstring ($file['contents']);
+			else
+			{
+				$image = imagecreatefromstring ($file['contents']);
+				$width = imagesx ($image);
+				$height = imagesy ($image);
+			}
 			if ($width < getConfigVar ('PREVIEW_IMAGE_MAXPXS') && $height < getConfigVar ('PREVIEW_IMAGE_MAXPXS'))
 				$resampled = FALSE;
 			else
